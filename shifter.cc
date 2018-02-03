@@ -12,14 +12,14 @@ extern "C" {
 }
 using namespace std;
 
-static AVStream * addStream(AVFormatContext *pFormatCtx, AVStream *pInStream) {
-    AVCodecContext  *pInCodecCtx    = NULL;
-    AVCodecContext  *pOutCodecCtx   = NULL;
-    AVCodec         *pCodec         = NULL;
-    AVStream        *pOutStream     = NULL;
-    AVDictionary    *pOptionsDict   = NULL;
+static AVStream *addStream(AVFormatContext *pFormatCtx, AVStream *pInStream, AVCodecContext **pOutCodecCtx) {
+    AVCodecParameters *pInCodecPar = NULL;
+    AVCodecContext *pInCodecCtx = NULL;
+    AVCodec *input_codec = NULL;
+    AVCodec *output_codec = NULL;
+    AVStream *pOutStream = NULL;
+    AVDictionary *pOptionsDict = NULL;
 
-    // cout << "addStream 0" << endl;
 
     pOutStream = avformat_new_stream(pFormatCtx, 0);
     if (!pOutStream) {
@@ -27,55 +27,57 @@ static AVStream * addStream(AVFormatContext *pFormatCtx, AVStream *pInStream) {
         exit(1);
     }
 
-    // Get a pointer to the codec context for the video stream
-    pInCodecCtx = pInStream->codec;
-    pCodec      = avcodec_find_decoder(pInCodecCtx->codec_id);
+    // Get a pointer to the codec parameters for the video stream
+    pInCodecPar = pInStream->codecpar;
 
+    input_codec = avcodec_find_decoder(pInCodecPar->codec_id);
+    if (input_codec == NULL) {
+        cout << "Unsupported codec (" << pInCodecPar->codec_id << ")" << endl;
+        exit(1);
+    }
 
-    // cout << "addStream 1" << endl;
+    pInCodecCtx = avcodec_alloc_context3(input_codec);
+    if (!pInCodecCtx) {
+        fprintf(stderr, "Could not allocate a decoding context\n");
+        exit(1);
+    }
 
-    if (pCodec == NULL) {
-        cout << "Unsupported codec (" << pInCodecCtx->codec_name << ")" << endl;
+    if (avcodec_parameters_to_context(pInCodecCtx, pInStream->codecpar) < 0) {
+        fprintf(stderr, "Could not initialize a decoding context\n");
+        avcodec_free_context(&pInCodecCtx);
         exit(1);
     }
 
     // Open codec
-    if (avcodec_open2(pInCodecCtx, pCodec, &pOptionsDict)<0) {
-        cout << "Unable to open codec (" << pInCodecCtx->codec_name << ")" << endl;
+    if (avcodec_open2(pInCodecCtx, input_codec, &pOptionsDict) < 0) {
+        cout << "Unable to open codec (" << pInCodecPar->codec_id << ")" << endl;
         exit(1);
     }
 
-    pOutCodecCtx = pOutStream->codec;
+    output_codec = avcodec_find_decoder(pInCodecPar->codec_id);
+    *pOutCodecCtx = avcodec_alloc_context3(output_codec);
+    if (!*pOutCodecCtx) {
+        cout << "Unable to allocate output codec context" << endl;
+        exit(1);
+    }
 
     // surprised there's not a codec context copy function
-    pOutCodecCtx->codec_id          = pInCodecCtx->codec_id;
-    pOutCodecCtx->codec_type        = pInCodecCtx->codec_type;
-    pOutCodecCtx->codec_tag         = pInCodecCtx->codec_tag;
-    pOutCodecCtx->bit_rate          = pInCodecCtx->bit_rate;
-    pOutCodecCtx->extradata         = pInCodecCtx->extradata;
-    pOutCodecCtx->extradata_size    = pInCodecCtx->extradata_size;
-
-    // pOutCodecCtx->sample_fmt        = pInCodecCtx->sample_fmt;
-    // pOutCodecCtx->sample_rate       = pInCodecCtx->sample_rate;
-    // pOutCodecCtx->channels          = pInCodecCtx->channels;
-    // pOutCodecCtx->frame_size        = pInCodecCtx->frame_size;
-    // pOutCodecCtx->block_align       = pInCodecCtx->block_align;
-
-    // pOutCodecCtx->width             = pInCodecCtx->width;
-    // pOutCodecCtx->height            = pInCodecCtx->height;
-    // pOutCodecCtx->pix_fmt           = pInCodecCtx->pix_fmt;
-    // pOutCodecCtx->time_base         = pInCodecCtx->time_base;
+    (*pOutCodecCtx)->codec_id = pInCodecPar->codec_id;
+    (*pOutCodecCtx)->codec_type = pInCodecPar->codec_type;
+    (*pOutCodecCtx)->codec_tag = pInCodecPar->codec_tag;
+    (*pOutCodecCtx)->bit_rate = pInCodecPar->bit_rate;
+    (*pOutCodecCtx)->extradata = pInCodecPar->extradata;
+    (*pOutCodecCtx)->extradata_size = pInCodecPar->extradata_size;
+    (*pOutCodecCtx)->width = pInCodecCtx->width;
+    (*pOutCodecCtx)->height = pInCodecCtx->height;
 
 
-    // cout << "addStream 4" << endl;
-
-
-    if(av_q2d(pInCodecCtx->time_base) * pInCodecCtx->ticks_per_frame > av_q2d(pInStream->time_base) && av_q2d(pInStream->time_base) < 1.0/1000) {
-        pOutCodecCtx->time_base = pInCodecCtx->time_base;
-        pOutCodecCtx->time_base.num *= pInCodecCtx->ticks_per_frame;
-    }
-    else {
-        pOutCodecCtx->time_base = pInStream->time_base;
+    if (av_q2d(pInCodecCtx->time_base) * pInCodecCtx->ticks_per_frame > av_q2d(pInStream->time_base) &&
+        av_q2d(pInStream->time_base) < 1.0 / 1000) {
+        (*pOutCodecCtx)->time_base = pInCodecCtx->time_base;
+        (*pOutCodecCtx)->time_base.num *= pInCodecCtx->ticks_per_frame;
+    } else {
+        (*pOutCodecCtx)->time_base = pInStream->time_base;
     }
 
     // cout << "addStream 5" << endl;
@@ -84,37 +86,38 @@ static AVStream * addStream(AVFormatContext *pFormatCtx, AVStream *pInStream) {
     switch (pInCodecCtx->codec_type) {
         case AVMEDIA_TYPE_AUDIO:
             // cout << "AUDIO CODEC" << endl;
-            pOutCodecCtx->channel_layout = pInCodecCtx->channel_layout;
-            pOutCodecCtx->sample_rate = pInCodecCtx->sample_rate;
-            pOutCodecCtx->channels = pInCodecCtx->channels;
-            pOutCodecCtx->frame_size = pInCodecCtx->frame_size;
-            if ((pInCodecCtx->block_align == 1 && pInCodecCtx->codec_id == CODEC_ID_MP3) || pInCodecCtx->codec_id == CODEC_ID_AC3) {
-                pOutCodecCtx->block_align = 0;
-            }
-            else {
-                pOutCodecCtx->block_align = pInCodecCtx->block_align;
+            (*pOutCodecCtx)->channel_layout = pInCodecCtx->channel_layout;
+            (*pOutCodecCtx)->sample_rate = pInCodecCtx->sample_rate;
+            (*pOutCodecCtx)->channels = pInCodecCtx->channels;
+            (*pOutCodecCtx)->frame_size = pInCodecCtx->frame_size;
+            if ((pInCodecCtx->block_align == 1 && pInCodecCtx->codec_id == AV_CODEC_ID_MP3) ||
+                pInCodecCtx->codec_id == AV_CODEC_ID_AC3) {
+                (*pOutCodecCtx)->block_align = 0;
+            } else {
+                (*pOutCodecCtx)->block_align = pInCodecCtx->block_align;
             }
             break;
         case AVMEDIA_TYPE_VIDEO:
             // cout << "VIDEO CODEC" << endl;
-            pOutCodecCtx->pix_fmt = pInCodecCtx->pix_fmt;
-            pOutCodecCtx->width = pInCodecCtx->width;
-            pOutCodecCtx->height = pInCodecCtx->height;
-            pOutCodecCtx->has_b_frames = pInCodecCtx->has_b_frames;
+            (*pOutCodecCtx)->pix_fmt = pInCodecCtx->pix_fmt;
+            (*pOutCodecCtx)->width = pInCodecCtx->width;
+            (*pOutCodecCtx)->height = pInCodecCtx->height;
+            (*pOutCodecCtx)->has_b_frames = pInCodecCtx->has_b_frames;
 
             if (pFormatCtx->oformat->flags & AVFMT_GLOBALHEADER) {
-                pOutCodecCtx->flags |= CODEC_FLAG_GLOBAL_HEADER;
+                (*pOutCodecCtx)->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
             }
             break;
-    default:
-        break;
+        default:
+            break;
     }
+
+    avcodec_parameters_from_context(pOutStream->codecpar, *pOutCodecCtx);
 
     return pOutStream;
 }
 
-int main(int argc, char **argv)
-{
+int main(int argc, char **argv) {
     string input;
     string outputPrefix;
 
@@ -123,6 +126,8 @@ int main(int argc, char **argv)
     AVFormatContext *pInFormatCtx = NULL;
     AVFormatContext *pOutFormatCtx = NULL;
     AVStream *pVideoStream = NULL;
+    AVCodecContext *pVideoCodecContext = NULL;
+    AVCodecContext *pAudioCodecContext = NULL;
     AVCodec *pCodec = NULL;
     int videoIndex;
     int audioIndex;
@@ -161,9 +166,9 @@ int main(int argc, char **argv)
         cout << "Could not open input file, make sure it is an mpegts file: " << ret << endl;
         exit(1);
     }
-     //pInFormatCtx->max_analyze_duration = 1000000;
+    //pInFormatCtx->max_analyze_duration = 1000000;
     // cout << "0.6" << endl;
-    
+
     if (avformat_find_stream_info(pInFormatCtx, NULL) < 0) {
         cout << "Could not read stream information" << endl;
         exit(1);
@@ -195,32 +200,28 @@ int main(int argc, char **argv)
     // cout << "pInFormatCtx->nb_streams " << pInFormatCtx->nb_streams << endl;
 
     for (i = 0; i < pInFormatCtx->nb_streams && (videoIndex < 0 || audioIndex < 0); i++) {
-        // cout << "checking streams for video, current stream type = " << pInFormatCtx->streams[i]->codec->codec_type;
-        // cout << " AVMEDIA_TYPE_VIDEO = " << AVMEDIA_TYPE_VIDEO << " AVMEDIA_TYPE_AUDIO = " <<  AVMEDIA_TYPE_AUDIO << endl;
-
         // skipping bad streams again again
-        if (pInFormatCtx->streams[i]->codec->codec_type == AVMEDIA_TYPE_VIDEO) {
+        if (pInFormatCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
             int64_t durationInt = pInFormatCtx->duration;
-            double durationSeconds = (double)durationInt / AV_TIME_BASE;        
+            double durationSeconds = (double) durationInt / AV_TIME_BASE;
             double fps = av_q2d(pInFormatCtx->streams[i]->avg_frame_rate);
-            
+
             unsigned int frameCount = 0;
             if (pInFormatCtx->streams[i]->nb_frames > 0) {
                 frameCount = pInFormatCtx->streams[i]->nb_frames;
-            }
-            else {
+            } else {
                 frameCount = floor(durationSeconds * fps);
-            } 
+            }
             if (frameCount <= 0) continue;
         }
 
-        switch (pInFormatCtx->streams[i]->codec->codec_type) {
+        switch (pInFormatCtx->streams[i]->codecpar->codec_type) {
             case AVMEDIA_TYPE_VIDEO:
                 cout << "Initial for loop adding VIDEO CODEC" << endl;
                 videoIndex = i;
                 pInFormatCtx->streams[i]->discard = AVDISCARD_NONE;
 
-                pVideoStream = addStream(pOutFormatCtx, pInFormatCtx->streams[i]);
+                pVideoStream = addStream(pOutFormatCtx, pInFormatCtx->streams[i], &pVideoCodecContext);
 
                 break;
             case AVMEDIA_TYPE_AUDIO:
@@ -228,11 +229,10 @@ int main(int argc, char **argv)
                 audioIndex = i;
 
                 pInFormatCtx->streams[i]->discard = AVDISCARD_NONE;
-                if (!pInFormatCtx->streams[i]->codec->channels) {
+                if (!pInFormatCtx->streams[i]->codecpar->channels) {
                     cout << "WARNING: No channels found (skipping) audio stream " << i << endl;
-                }
-                else {
-                    addStream(pOutFormatCtx, pInFormatCtx->streams[i]);
+                } else {
+                    addStream(pOutFormatCtx, pInFormatCtx->streams[i], &pAudioCodecContext);
                 }
 
                 break;
@@ -243,47 +243,34 @@ int main(int argc, char **argv)
                 break;
         }
     }
-    // cout << "0.95" << endl;   
-    pCodec = avcodec_find_decoder(pVideoStream->codec->codec_id);
+
+    pCodec = avcodec_find_decoder(pVideoStream->codecpar->codec_id);
     if (!pCodec) {
         cout << "Could not find video decoder, key frames will not be honored" << endl;
     }
 
-    // cout << "0.97" << endl;
-
-    if (avcodec_open2(pVideoStream->codec, pCodec, NULL) < 0) {
+    if (avcodec_open2(pVideoCodecContext, pCodec, NULL) < 0) {
         cout << "Could not open video decoder, key frames will not be honored" << endl;
     }
-
-    // cout << "0.98" << endl;
-
-    // stringstream outStream;
-    // outStream << outputPrefix << std::setfill('0') << std::setw(3) << outputIndex << ".ts";
-    // outputIndex++;
-    // outStream >> outFile;
-
-    // cout << "0.99" << endl;
 
     if (avio_open(&pOutFormatCtx->pb, outFile.c_str(), AVIO_FLAG_WRITE) < 0) {
         cout << "Could not open " << outFile << endl;
         exit(1);
     }
 
-    // cout << "0.991" << endl;
-
-    if (avformat_write_header(pOutFormatCtx,NULL)) {
+    if (avformat_write_header(pOutFormatCtx, NULL)) {
         cout << "Could not write mpegts header to first output file" << endl;
         exit(1);
     }
 
-    // cout << "0.992" << endl;
     const unsigned long MAX_PACKETS = 1000000;
     unsigned long iPacket = 0;
     bool initZeros = true;
-    double ptsZero = 0, dtsZero = 0;
+    int64_t dtsZero = 0;
+    int64_t ptsZero = 0;
     double firstDtsTime = 0;
     bool initFirstDTSTime = true;
-    int firstPacketStreamIndex = videoIndex; 
+    int firstPacketStreamIndex = videoIndex;
 
     // find first video packet time
     do {
@@ -291,17 +278,12 @@ int main(int argc, char **argv)
         AVPacket packet;
         av_init_packet(&packet);
 
-        decodeDone = av_read_frame(pInFormatCtx, &packet);       
+        decodeDone = av_read_frame(pInFormatCtx, &packet);
 
         if (decodeDone < 0) {
             break;
         }
 
-        if (av_dup_packet(&packet) < 0) {
-            cout << "Could not duplicate packet" << endl;
-            av_free_packet(&packet);
-            break;
-        }
         if (initFirstDTSTime) {
             firstDtsTime = packet.dts;
             initFirstDTSTime = false;
@@ -319,7 +301,7 @@ int main(int argc, char **argv)
             if (dtsZero < ptsZero) dtsZero = ptsZero;
         }
 
-        av_free_packet(&packet);
+        av_packet_unref(&packet);
         if (iPacket++ >= MAX_PACKETS) break;
 
     } while (initZeros);
@@ -332,65 +314,65 @@ int main(int argc, char **argv)
     // cout << " video: " << isFirstVideo << endl;
 
     // flush buffers before seek
-    avcodec_flush_buffers(pVideoStream->codec);
+    avcodec_flush_buffers(pVideoCodecContext);
 
     // seek beginning of file
     av_seek_frame(pInFormatCtx, firstPacketStreamIndex, firstDtsTime, AVSEEK_FLAG_BACKWARD);
 
     // cout << "rewound file to beginning" << endl;
-    
+
     do {
         // double segmentTime;
-        AVPacket packet;
-        av_init_packet(&packet);
+        AVPacket input_packet;
+        AVPacket output_packet;
+        av_init_packet(&input_packet);
 
-        decodeDone = av_read_frame(pInFormatCtx, &packet);       
+        decodeDone = av_read_frame(pInFormatCtx, &input_packet);
 
         if (decodeDone < 0) {
             break;
         }
 
-        if (av_dup_packet(&packet) < 0) {
+        if (av_packet_ref(&output_packet, &input_packet) < 0) {
             cout << "Could not duplicate packet" << endl;
-            av_free_packet(&packet);
+            av_packet_unref(&input_packet);
             break;
         }
 
-        int iStreamIndex = packet.stream_index;
+        int iStreamIndex = input_packet.stream_index;
         int isAudio = iStreamIndex == audioIndex;
         int isVideo = iStreamIndex == videoIndex;
 
-        // cout << "A/V type " << isAudio << "/" << isVideo << " before packet pts dts " << (double)packet.pts/90000 << " " << (double)packet.dts/90000;
+        // cout << "A/V type " << isAudio << "/" << isVideo << " before input_packet pts dts " << (double)input_packet.pts/90000 << " " << (double)input_packet.dts/90000;
         if (isVideo) {
-            packet.pts = packet.pts - ptsZero + tsShift;
-            packet.dts = packet.dts - dtsZero + tsShift;
-        }
-        else if (isAudio) {
-            if ( (packet.pts - dtsZero + tsShift) > 0.0 && (packet.dts - dtsZero + tsShift) > 0.0) {
-                packet.pts = packet.pts - ptsZero + tsShift;
-                packet.dts = packet.dts - dtsZero + tsShift;            
-            }
-            else {
-                cout << "audio pts or dts would be negative, skipping pts,dts " << packet.pts - ptsZero + tsShift;
-                cout << "," << packet.dts - dtsZero + tsShift << endl;
-                av_free_packet(&packet);
+            output_packet.pts = input_packet.pts - ptsZero + tsShift;
+            output_packet.dts = input_packet.dts - dtsZero + tsShift;
+        } else if (isAudio) {
+            if ((input_packet.pts - dtsZero + tsShift) > 0.0 && (input_packet.dts - dtsZero + tsShift) > 0.0) {
+                output_packet.pts = input_packet.pts - ptsZero + tsShift;
+                output_packet.dts = input_packet.dts - dtsZero + tsShift;
+            } else {
+                cout << "audio pts or dts would be negative, skipping pts,dts " << input_packet.pts - ptsZero + tsShift;
+                cout << "," << input_packet.dts - dtsZero + tsShift << endl;
+                av_packet_unref(&input_packet);
                 continue;
             }
         }
-        // cout << " after packet pts dts " << (double)packet.pts/90000 << " " << (double)packet.dts/90000 << endl;
+        // cout << " after input_packet pts dts " << (double)input_packet.pts/90000 << " " << (double)input_packet.dts/90000 << endl;
 
 
-        ret = av_interleaved_write_frame(pOutFormatCtx, &packet);
+        ret = av_interleaved_write_frame(pOutFormatCtx, &output_packet);
         if (ret < 0) {
             cout << "Warning: Could not write frame of stream" << endl;
-        }
-        else if (ret > 0) {
+        } else if (ret > 0) {
             //cout <<  "End of stream requested" << endl;
-            av_free_packet(&packet);
+            av_packet_unref(&input_packet);
+            av_packet_unref(&output_packet);
             break;
         }
 
-        av_free_packet(&packet);
+        av_packet_unref(&input_packet);
+        av_packet_unref(&output_packet);
 
         if (iPacket++ >= MAX_PACKETS) break;
 
@@ -398,10 +380,10 @@ int main(int argc, char **argv)
 
     av_write_trailer(pOutFormatCtx);
 
-    avcodec_close(pVideoStream->codec);
+    avcodec_close(pVideoCodecContext);
 
-    for(i = 0; i < pOutFormatCtx->nb_streams; i++) {
-        av_freep(&pOutFormatCtx->streams[i]->codec);
+    for (i = 0; i < pOutFormatCtx->nb_streams; i++) {
+//        av_freep(&pOutFormatCtx->streams[i]->codec);
         av_freep(&pOutFormatCtx->streams[i]);
     }
 
